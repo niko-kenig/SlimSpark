@@ -9,12 +9,27 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@react-native-firebase/auth": "^23.5.0",
+    "@react-native-firebase/firestore": "^23.5.0",
+    "@react-native-firebase/storage": "^23.5.0",
+    "@react-navigation/bottom-tabs": "^7.8.11",
+    "@react-navigation/native": "^7.1.24",
+    "@react-navigation/stack": "^7.6.11",
+    "@supabase/supabase-js": "^2.86.0",
     "expo": "~54.0.25",
     "expo-status-bar": "~3.0.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "react-hook-form": "^7.67.0",
     "react-native": "0.81.5",
-    "react-native-web": "^0.21.0"
+    "react-native-image-picker": "^8.2.1",
+    "react-native-safe-area-context": "^5.6.2",
+    "react-native-screens": "^4.18.0",
+    "react-native-url-polyfill": "^3.0.0",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-web": "^0.21.0",
+    "yup": "^1.7.1",
+    "zustand": "^5.0.9"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
