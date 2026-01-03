@@ -2,6 +2,11 @@
   "name": "slimspark",
   "version": "1.0.0",
   "main": "index.ts",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true
+  },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -15,16 +20,20 @@
     "@react-navigation/bottom-tabs": "^7.8.11",
     "@react-navigation/native": "^7.1.24",
     "@react-navigation/stack": "^7.6.11",
-    "@supabase/supabase-js": "^2.86.0",
+    "@supabase/supabase-js": "^2.86.2",
     "expo": "~54.0.25",
+    "expo-linear-gradient": "^15.0.8",
     "expo-status-bar": "~3.0.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-hook-form": "^7.67.0",
     "react-native": "0.81.5",
+    "react-native-chart-kit": "^6.12.0",
+    "react-native-gifted-charts": "^1.4.69",
     "react-native-image-picker": "^8.2.1",
     "react-native-safe-area-context": "^5.6.2",
     "react-native-screens": "^4.18.0",
+    "react-native-svg": "^15.15.1",
     "react-native-url-polyfill": "^3.0.0",
     "react-native-vector-icons": "^10.3.0",
     "react-native-web": "^0.21.0",
@@ -33,7 +42,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
-    "typescript": "~5.9.2"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "private": true
 }

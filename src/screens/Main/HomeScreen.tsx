@@ -1,7 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { supabase } from '../../lib/supabaseClient';
 
 type HomeScreenProps = {
+  userId?: string | null;
+  initialWeight?: number | null;
+  targetWeight?: number | null;
+  goal?: string | null;
   onOpenDiary?: () => void;
   onOpenMenu?: () => void;
   onTabChange?: (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => void;
@@ -9,7 +15,113 @@ type HomeScreenProps = {
 
 const motivationQuote = '"Здоровый образ жизни - это не цель, а путь, который стоит пройти."';
 
-export const HomeScreen = ({ onOpenDiary, onOpenMenu, onTabChange }: HomeScreenProps) => {
+export const HomeScreen = ({
+  userId,
+  initialWeight,
+  targetWeight,
+  goal,
+  onOpenDiary,
+  onOpenMenu,
+  onTabChange,
+}: HomeScreenProps) => {
+  const [currentWeight, setCurrentWeight] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState({ percent: 0, remaining: 0 });
+
+  useEffect(() => {
+    loadCurrentWeight();
+  }, [userId]);
+
+  const loadCurrentWeight = async () => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      // Получаем последнее измерение веса
+      const { data, error } = await supabase
+        .from('body_measurements')
+        .select('value')
+        .eq('user_id', userId)
+        .eq('measurement_type', 'weight')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error loading weight:', error);
+      }
+
+      if (data) {
+        setCurrentWeight(Number(data.value));
+      } else if (initialWeight) {
+        // Если нет измерений, используем начальный вес
+        setCurrentWeight(initialWeight);
+      }
+    } catch (error) {
+      console.error('Error loading current weight:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    calculateProgress();
+  }, [currentWeight, initialWeight, targetWeight, goal]);
+
+  const calculateProgress = () => {
+    if (!initialWeight || !currentWeight || !targetWeight) {
+      // Если нет данных, показываем 0%
+      setProgress({ percent: 0, remaining: 0 });
+      return;
+    }
+
+    const finalTargetWeight = targetWeight;
+    let remaining = 0;
+    let percent = 0;
+
+    if (goal === 'weight_loss') {
+      // Для похудения: прогресс от стартового до конечного веса
+      const totalToLose = initialWeight - finalTargetWeight; // Общая цель
+      const lost = initialWeight - currentWeight; // Уже потеряно
+      remaining = Math.max(0, currentWeight - finalTargetWeight); // Осталось до цели
+      
+      if (totalToLose > 0) {
+        percent = Math.min(100, Math.max(0, (lost / totalToLose) * 100));
+      } else {
+        percent = 0;
+      }
+    } else if (goal === 'gain') {
+      // Для набора массы: прогресс от стартового до конечного веса
+      const totalToGain = finalTargetWeight - initialWeight; // Общая цель
+      const gained = currentWeight - initialWeight; // Уже набрано
+      remaining = Math.max(0, finalTargetWeight - currentWeight); // Осталось до цели
+      
+      if (totalToGain > 0) {
+        percent = Math.min(100, Math.max(0, (gained / totalToGain) * 100));
+      } else {
+        percent = 0;
+      }
+    } else {
+      // Для поддержания веса: показываем прогресс относительно целевого веса
+      remaining = Math.abs(currentWeight - finalTargetWeight);
+      const diff = remaining;
+      
+      if (diff <= 0.5) {
+        percent = 100;
+        remaining = 0;
+      } else {
+        const maxDeviation = Math.max(Math.abs(initialWeight - finalTargetWeight), 5);
+        percent = Math.max(0, 100 - (diff / maxDeviation) * 100);
+      }
+    }
+
+    setProgress({
+      percent: Math.round(percent),
+      remaining: Math.abs(remaining),
+    });
+  };
   const handleTabPress = (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => {
     if (tab === 'diary') {
       onOpenDiary?.();
@@ -34,13 +146,29 @@ export const HomeScreen = ({ onOpenDiary, onOpenMenu, onTabChange }: HomeScreenP
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Ежедневный прогресс</Text>
           <Text style={styles.cardSubtitle}>Отслеживайте свои успехи каждый день.</Text>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: '75%' }]} />
-          </View>
-          <View style={styles.progressLegend}>
-            <Text style={styles.progressText}>1.5 кг из 2 кг</Text>
-            <Text style={styles.progressText}>Осталось: 0.5 кг</Text>
-          </View>
+          {loading ? (
+            <View style={styles.progressLoading}>
+              <ActivityIndicator size="small" color="#00C9D9" />
+            </View>
+          ) : (
+            <>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${Math.min(100, Math.max(0, progress.percent))}%` },
+                  ]}
+                />
+              </View>
+              <View style={styles.progressLegend}>
+                <Text style={styles.progressText}>
+                  {loading || !targetWeight
+                    ? 'Загрузка...'
+                    : `Осталось: ${progress.remaining.toFixed(1)} кг`}
+                </Text>
+              </View>
+            </>
+          )}
         </View>
 
         <TouchableOpacity
@@ -116,14 +244,14 @@ export const HomeScreen = ({ onOpenDiary, onOpenMenu, onTabChange }: HomeScreenP
 
           const iconName =
             tab === 'home'
-              ? 'home'
+              ? 'grid-outline'
               : tab === 'courses'
-              ? 'book'
+              ? 'book-outline'
               : tab === 'diary'
-              ? 'scale'
+              ? 'scale-outline'
               : tab === 'progress'
-              ? 'stats-chart'
-              : 'person';
+              ? 'trophy-outline'
+              : 'person-outline';
 
           return (
             <TouchableOpacity
@@ -212,6 +340,12 @@ const styles = StyleSheet.create({
   progressText: {
     color: '#6C6C6C',
     fontSize: 14,
+  },
+  progressLoading: {
+    marginTop: 12,
+    height: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   menuCard: {
     backgroundColor: '#E9FBFF',

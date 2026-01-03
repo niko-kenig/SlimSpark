@@ -23,7 +23,7 @@ const goalOptions: GoalOption[] = [
 ];
 
 type CompleteProfileScreenProps = {
-  onSubmit?: (data: { name: string; goal: string; weight: number }) => void;
+  onSubmit?: (data: { name: string; goal: string; weight: number; targetWeight: number }) => void;
   loading?: boolean;
 };
 
@@ -31,6 +31,7 @@ export const CompleteProfileScreen = ({ onSubmit, loading }: CompleteProfileScre
   const [name, setName] = useState('');
   const [goal, setGoal] = useState<GoalOption | null>(null);
   const [weight, setWeight] = useState('0.0');
+  const [targetWeight, setTargetWeight] = useState('0.0');
   const [pickerVisible, setPickerVisible] = useState(false);
 
   const goalLabel = useMemo(() => goal?.label ?? 'Выберите цель', [goal]);
@@ -41,10 +42,47 @@ export const CompleteProfileScreen = ({ onSubmit, loading }: CompleteProfileScre
       return;
     }
 
+    const startWeight = Number(weight) || 0;
+    const endWeight = Number(targetWeight) || 0;
+
+    if (startWeight <= 0) {
+      // Можно добавить Alert, но для простоты просто выходим
+      return;
+    }
+
+    // Валидация конечного веса в зависимости от цели
+    if (goal.value === 'weight_loss') {
+      if (endWeight <= 0) {
+        // Можно добавить Alert: "Укажите конечный вес для похудения"
+        return;
+      }
+      if (endWeight >= startWeight) {
+        // Можно добавить Alert: "Конечный вес должен быть меньше стартового"
+        return;
+      }
+    }
+    
+    if (goal.value === 'gain') {
+      if (endWeight <= 0) {
+        // Можно добавить Alert: "Укажите конечный вес для набора массы"
+        return;
+      }
+      if (endWeight <= startWeight) {
+        // Можно добавить Alert: "Конечный вес должен быть больше стартового"
+        return;
+      }
+    }
+
+    // Для поддержания веса, если не указан конечный вес, используем стартовый
+    const finalTargetWeight = goal.value === 'maintenance' && endWeight <= 0 
+      ? startWeight 
+      : endWeight || startWeight;
+
     onSubmit?.({
       name: name.trim(),
       goal: goal.value,
-      weight: Number(weight) || 0,
+      weight: startWeight,
+      targetWeight: finalTargetWeight,
     });
   };
 
@@ -103,6 +141,27 @@ export const CompleteProfileScreen = ({ onSubmit, loading }: CompleteProfileScre
             <Text style={styles.weightUnit}>кг</Text>
           </View>
           <Text style={styles.helper}>Укажите ваш текущий вес.</Text>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Конечный вес</Text>
+          <View style={styles.weightRow}>
+            <TextInput
+              placeholder="0.0"
+              keyboardType="decimal-pad"
+              style={[styles.input, styles.weightInput]}
+              value={targetWeight}
+              onChangeText={setTargetWeight}
+            />
+            <Text style={styles.weightUnit}>кг</Text>
+          </View>
+          <Text style={styles.helper}>
+            {goal?.value === 'weight_loss'
+              ? 'Укажите желаемый вес для похудения.'
+              : goal?.value === 'gain'
+              ? 'Укажите желаемый вес для набора массы.'
+              : 'Укажите желаемый вес для поддержания.'}
+          </Text>
         </View>
 
         <TouchableOpacity
@@ -234,4 +293,5 @@ const styles = StyleSheet.create({
     color: '#111',
   },
 });
+
 

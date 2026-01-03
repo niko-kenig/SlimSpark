@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { launchImageLibrary } from 'react-native-image-picker';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   SafeAreaView,
@@ -38,6 +39,38 @@ export const ProfileScreen = ({
   const [sendDiaryEnabled, setSendDiaryEnabled] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // Загружаем существующий аватар при открытии профиля
+  useEffect(() => {
+    const loadAvatar = async () => {
+      if (!userId) return;
+
+      try {
+        // Пробуем загрузить аватар с разными расширениями
+        const extensions = ['jpg', 'jpeg', 'png'];
+        for (const ext of extensions) {
+          const filePath = `${userId}/avatar.${ext}`;
+          const { data } = supabase.storage.from('avatar').getPublicUrl(filePath);
+          
+          // Проверяем, существует ли файл (простая проверка через fetch)
+          try {
+            const response = await fetch(data.publicUrl, { method: 'HEAD' });
+            if (response.ok) {
+              setAvatarUri(data.publicUrl);
+              return;
+            }
+          } catch {
+            // Продолжаем поиск
+          }
+        }
+      } catch (error) {
+        console.error('Error loading avatar:', error);
+        // Не показываем ошибку пользователю, просто не загружаем аватар
+      }
+    };
+
+    loadAvatar();
+  }, [userId]);
+
   const handleTabPress = (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => {
     onTabChange?.(tab);
   };
@@ -55,32 +88,143 @@ export const ProfileScreen = ({
 
       const asset = result.assets[0];
       if (!asset.uri || !userId) {
-        setAvatarUri(asset.uri ?? null);
+        if (asset.uri) {
+          setAvatarUri(asset.uri);
+        }
         return;
       }
 
+      // Сначала показываем локальное фото для мгновенной обратной связи
+      setAvatarUri(asset.uri);
       setUploading(true);
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const ext = blob.type === 'image/png' ? 'png' : 'jpg';
-      const filePath = `${userId}/avatar.${ext}`;
+      
+      try {
+        let blob: Blob;
+        let fileExtension: string;
+        
+        // Проверяем, является ли URI data URI
+        if (asset.uri.startsWith('data:')) {
+          // Обрабатываем data URI
+          const base64Data = asset.uri.split(',')[1];
+          const mimeType = asset.uri.split(';')[0].split(':')[1] || 'image/jpeg';
+          
+          // Определяем расширение из MIME type
+          if (mimeType.includes('png')) {
+            fileExtension = 'png';
+          } else if (mimeType.includes('gif')) {
+            fileExtension = 'gif';
+          } else if (mimeType.includes('webp')) {
+            fileExtension = 'webp';
+          } else {
+            fileExtension = 'jpg'; // По умолчанию jpg
+          }
+          
+          // Конвертируем base64 в blob
+          const byteCharacters = atob(base64Data);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          blob = new Blob([byteArray], { type: mimeType });
+        } else {
+          // Обычный файловый URI
+          const response = await fetch(asset.uri);
+          if (!response.ok) {
+            throw new Error('Не удалось загрузить изображение');
+          }
+          
+          blob = await response.blob();
+          
+          // Определяем расширение из MIME type blob или из asset.type
+          const mimeType = blob.type || asset.type || 'image/jpeg';
+          if (mimeType.includes('png')) {
+            fileExtension = 'png';
+          } else if (mimeType.includes('gif')) {
+            fileExtension = 'gif';
+          } else if (mimeType.includes('webp')) {
+            fileExtension = 'webp';
+          } else {
+            // Пробуем определить из URI
+            const uriParts = asset.uri.split('.');
+            fileExtension = uriParts.length > 1 
+              ? uriParts[uriParts.length - 1].toLowerCase().split('?')[0].replace(/[^a-z0-9]/g, '') || 'jpg'
+              : 'jpg';
+          }
+        }
+        
+        // Формируем правильное имя файла с использованием userId
+        const filePath = `${userId}/avatar.${fileExtension}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from('avatars')
-        .upload(filePath, blob, { upsert: true, contentType: blob.type });
+        console.log('Uploading to:', filePath, 'Content type:', blob.type, 'Extension:', fileExtension);
 
-      if (uploadError) {
-        throw uploadError;
+        // Загружаем в bucket "avatar"
+        const contentType = blob.type || `image/${fileExtension === 'png' ? 'png' : fileExtension === 'gif' ? 'gif' : 'jpeg'}`;
+        
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('avatar')
+          .upload(filePath, blob, { 
+            upsert: true, 
+            contentType: contentType,
+            cacheControl: '3600',
+          });
+
+        if (uploadError) {
+          console.error('Upload error:', uploadError);
+          throw new Error(uploadError.message || 'Ошибка загрузки файла в Supabase');
+        }
+
+        console.log('Upload successful:', uploadData);
+
+        // Пробуем получить публичный URL
+        const { data: urlData, error: urlError } = supabase.storage
+          .from('avatar')
+          .getPublicUrl(filePath);
+        
+        if (urlError) {
+          console.error('URL error:', urlError);
+          // Если публичный URL не работает, пробуем signed URL
+          const { data: signedData, error: signedError } = await supabase.storage
+            .from('avatar')
+            .createSignedUrl(filePath, 3600);
+          
+          if (signedError) {
+            console.error('Signed URL error:', signedError);
+            throw new Error('Не удалось получить URL файла');
+          }
+          
+          if (signedData?.signedUrl) {
+            setAvatarUri(signedData.signedUrl);
+          } else {
+            throw new Error('Не удалось получить подписанный URL');
+          }
+        } else if (urlData?.publicUrl) {
+          // Добавляем timestamp к URL для обновления кеша
+          const urlWithTimestamp = `${urlData.publicUrl}?t=${Date.now()}`;
+          console.log('Using public URL:', urlWithTimestamp);
+          setAvatarUri(urlWithTimestamp);
+        } else {
+          throw new Error('Не удалось получить URL загруженного файла');
+        }
+      } catch (uploadError) {
+        console.error('Upload process error:', uploadError);
+        // Оставляем локальное фото, если загрузка не удалась
+        Alert.alert(
+          'Ошибка загрузки',
+          uploadError instanceof Error 
+            ? uploadError.message 
+            : 'Не удалось загрузить фото профиля в Supabase. Локальное фото будет сохранено.'
+        );
+        // Локальное фото уже установлено выше
+      } finally {
+        setUploading(false);
       }
-
-      const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
-      setAvatarUri(data.publicUrl);
     } catch (error) {
+      console.error('Image picker error:', error);
       Alert.alert(
         'Ошибка',
-        error instanceof Error ? error.message : 'Не удалось загрузить фото профиля'
+        error instanceof Error ? error.message : 'Не удалось выбрать фото'
       );
-    } finally {
       setUploading(false);
     }
   };
@@ -103,13 +247,36 @@ export const ProfileScreen = ({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.profileHeader}>
-          <TouchableOpacity style={styles.avatarWrapper} onPress={handlePickAvatar}>
+          <TouchableOpacity
+            style={styles.avatarWrapper}
+            onPress={handlePickAvatar}
+            disabled={uploading}
+            activeOpacity={uploading ? 1 : 0.7}
+          >
             {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              <View style={styles.avatarImageContainer}>
+                <Image 
+                  source={{ uri: avatarUri }} 
+                  style={styles.avatarImage}
+                  onError={(error) => {
+                    console.error('Image load error:', error);
+                    // Если изображение не загружается, показываем placeholder
+                  }}
+                />
+                {uploading && (
+                  <View style={styles.avatarOverlay}>
+                    <ActivityIndicator size="small" color="#fff" />
+                  </View>
+                )}
+              </View>
             ) : (
               <>
                 <View style={styles.avatarPlaceholderCircle}>
-                  <Ionicons name="person" size={36} color="#fff" />
+                  {uploading ? (
+                    <ActivityIndicator size="large" color="#fff" />
+                  ) : (
+                    <Ionicons name="person" size={36} color="#fff" />
+                  )}
                 </View>
                 <Text style={styles.avatarUploadText}>
                   {uploading ? 'Загрузка...' : 'Загрузить фото'}
@@ -308,9 +475,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  avatarImageContainer: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    overflow: 'hidden',
+    position: 'relative',
+  },
   avatarImage: {
     width: 96,
     height: 96,
+    borderRadius: 48,
+  },
+  avatarOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 48,
   },
   avatarUploadText: {
