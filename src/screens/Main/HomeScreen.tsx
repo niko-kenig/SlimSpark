@@ -2,34 +2,64 @@ import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { supabase } from '../../lib/supabaseClient';
+import { useUserStore } from '../../store/userStore';
+import { getQuoteOfTheDay } from '../../services/quoteService';
+import { TabBar } from '../../components/TabBar';
+import { SkeletonCard } from '../../components/SkeletonLoader';
 
 type HomeScreenProps = {
   userId?: string | null;
   initialWeight?: number | null;
   targetWeight?: number | null;
   goal?: string | null;
+  currentScreen?: 'home' | 'courses' | 'diary' | 'progress' | 'profile';
   onOpenDiary?: () => void;
   onOpenMenu?: () => void;
   onTabChange?: (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => void;
 };
 
-const motivationQuote = '"Здоровый образ жизни - это не цель, а путь, который стоит пройти."';
+// Дефолтная цитата (будет заменена на реальную из API)
 
 export const HomeScreen = ({
-  userId,
-  initialWeight,
-  targetWeight,
-  goal,
+  userId: userIdProp,
+  initialWeight: initialWeightProp,
+  targetWeight: targetWeightProp,
+  goal: goalProp,
+  currentScreen = 'home',
   onOpenDiary,
   onOpenMenu,
   onTabChange,
 }: HomeScreenProps) => {
+  // Используем store, если пропсы не переданы
+  const { userId: userIdFromStore, profile } = useUserStore();
+  const userId = userIdProp || userIdFromStore;
+  const initialWeight = initialWeightProp ?? profile?.initialWeight ?? null;
+  const targetWeight = targetWeightProp ?? profile?.targetWeight ?? null;
+  const goal = goalProp || profile?.goal || null;
   const [currentWeight, setCurrentWeight] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState({ percent: 0, remaining: 0 });
+  const [hasDiaryEntryToday, setHasDiaryEntryToday] = useState(false);
+  const [currentLesson, setCurrentLesson] = useState<{
+    title: string;
+    description: string;
+    progress: number;
+  } | null>(null);
+  const [loadingDiary, setLoadingDiary] = useState(true);
+  const [loadingLesson, setLoadingLesson] = useState(true);
+  const [motivationQuote, setMotivationQuote] = useState({
+    text: 'Здоровый образ жизни - это не цель, а путь, который стоит пройти.',
+    author: 'Неизвестно',
+  });
+  const [loadingQuote, setLoadingQuote] = useState(true);
 
   useEffect(() => {
-    loadCurrentWeight();
+    if (userId) {
+      loadCurrentWeight();
+      checkDiaryEntryToday();
+      loadCurrentLesson();
+    }
+    loadMotivationQuote();
   }, [userId]);
 
   const loadCurrentWeight = async () => {
@@ -69,6 +99,147 @@ export const HomeScreen = ({
   useEffect(() => {
     calculateProgress();
   }, [currentWeight, initialWeight, targetWeight, goal]);
+
+  // Проверка дневника на сегодня
+  const checkDiaryEntryToday = async () => {
+    if (!userId) {
+      setLoadingDiary(false);
+      return;
+    }
+
+    try {
+      setLoadingDiary(true);
+      
+      // Получаем начало и конец сегодняшнего дня
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const { data, error } = await supabase
+        .from('diary_entries')
+        .select('id')
+        .eq('user_id', userId)
+        .gte('created_at', today.toISOString())
+        .lt('created_at', tomorrow.toISOString())
+        .limit(1)
+        .maybeSingle();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error checking diary entry:', error);
+      }
+
+      setHasDiaryEntryToday(!!data);
+    } catch (error) {
+      console.error('Error checking diary entry:', error);
+      setHasDiaryEntryToday(false);
+    } finally {
+      setLoadingDiary(false);
+    }
+  };
+
+  // Загрузка текущего урока из course_progress
+  const loadCurrentLesson = async () => {
+    if (!userId) {
+      setLoadingLesson(false);
+      return;
+    }
+
+    try {
+      setLoadingLesson(true);
+
+      // Получаем последний урок в прогрессе (не завершенный)
+      const { data: progressData, error: progressError } = await supabase
+        .from('course_progress')
+        .select(`
+          lesson_id,
+          progress_percent,
+          lessons (
+            id,
+            title,
+            content,
+            module_id,
+            course_modules (
+              course_id,
+              courses (
+                title
+              )
+            )
+          )
+        `)
+        .eq('user_id', userId)
+        .eq('completed', false)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (progressError && progressError.code !== 'PGRST116') {
+        console.error('Error loading current lesson:', progressError);
+      }
+
+      if (progressData && progressData.lessons) {
+        const lesson = progressData.lessons as any;
+        const module = lesson.course_modules as any;
+        const course = module?.courses as any;
+        
+        setCurrentLesson({
+          title: lesson.title || 'Урок',
+          description: lesson.content 
+            ? (lesson.content.substring(0, 100) + (lesson.content.length > 100 ? '...' : ''))
+            : 'Продолжайте изучение курса',
+          progress: progressData.progress_percent || 0,
+        });
+      } else {
+        // Если нет урока в прогрессе, пытаемся найти первый незавершенный урок
+        const { data: firstLesson, error: firstLessonError } = await supabase
+          .from('lessons')
+          .select(`
+            id,
+            title,
+            content,
+            course_modules (
+              courses (
+                title
+              )
+            )
+          `)
+          .order('order_index', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (!firstLessonError && firstLesson) {
+          setCurrentLesson({
+            title: firstLesson.title || 'Начните обучение',
+            description: firstLesson.content 
+              ? (firstLesson.content.substring(0, 100) + (firstLesson.content.length > 100 ? '...' : ''))
+              : 'Начните изучение курса',
+            progress: 0,
+          });
+        } else {
+          setCurrentLesson(null);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading current lesson:', error);
+      setCurrentLesson(null);
+    } finally {
+      setLoadingLesson(false);
+    }
+  };
+
+  // Загрузка мотивационной цитаты дня
+  const loadMotivationQuote = async () => {
+    try {
+      setLoadingQuote(true);
+      const quote = await getQuoteOfTheDay('ru');
+      setMotivationQuote(quote);
+    } catch (error) {
+      console.error('Error loading quote:', error);
+      // Оставляем дефолтную цитату при ошибке
+    } finally {
+      setLoadingQuote(false);
+    }
+  };
 
   const calculateProgress = () => {
     if (!initialWeight || !currentWeight || !targetWeight) {
@@ -147,9 +318,7 @@ export const HomeScreen = ({
           <Text style={styles.cardTitle}>Ежедневный прогресс</Text>
           <Text style={styles.cardSubtitle}>Отслеживайте свои успехи каждый день.</Text>
           {loading ? (
-            <View style={styles.progressLoading}>
-              <ActivityIndicator size="small" color="#00C9D9" />
-            </View>
+            <SkeletonCard />
           ) : (
             <>
               <View style={styles.progressTrack}>
@@ -186,33 +355,70 @@ export const HomeScreen = ({
           </View>
         </TouchableOpacity>
 
-        <View style={[styles.card, styles.alertCard]}>
-          <View style={styles.alertHeader}>
-            <Ionicons name="book-outline" size={20} color="#D64550" />
-            <Text style={styles.alertTitle}>Дневник не отправлен</Text>
+        {loadingDiary ? (
+          <SkeletonCard />
+        ) : hasDiaryEntryToday ? (
+          <View style={[styles.card, styles.successCard]}>
+            <View style={styles.alertHeader}>
+              <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+              <Text style={styles.successTitle}>Дневник отправлен</Text>
+            </View>
+            <Text style={styles.successText}>Отлично! Вы уже отправили дневник сегодня.</Text>
+            <TouchableOpacity style={styles.secondaryButton} onPress={onOpenDiary}>
+              <Text style={styles.secondaryButtonText}>Посмотреть дневник</Text>
+            </TouchableOpacity>
           </View>
-          <Text style={styles.alertText}>Отправьте его сейчас!</Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={onOpenDiary}>
-            <Text style={styles.primaryButtonText}>+ Отправить дневник</Text>
-          </TouchableOpacity>
-        </View>
+        ) : (
+          <View style={[styles.card, styles.alertCard]}>
+            <View style={styles.alertHeader}>
+              <Ionicons name="book-outline" size={20} color="#D64550" />
+              <Text style={styles.alertTitle}>Дневник не отправлен</Text>
+            </View>
+            <Text style={styles.alertText}>Отправьте его сейчас!</Text>
+            <TouchableOpacity style={styles.primaryButton} onPress={onOpenDiary}>
+              <Text style={styles.primaryButtonText}>+ Отправить дневник</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-        <View style={[styles.card, styles.lessonCard]}>
-          <Text style={styles.lessonLabel}>Текущий урок</Text>
-          <Text style={styles.lessonTitle}>Основы питания: Урок 3</Text>
-          <Text style={styles.lessonDescription}>
-            Узнайте о макронутриентах, их функциях и важности для вашего организма.
-          </Text>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: '60%' }]} />
+        {loadingLesson ? (
+          <SkeletonCard />
+        ) : currentLesson ? (
+          <View style={[styles.card, styles.lessonCard]}>
+            <Text style={styles.lessonLabel}>Текущий урок</Text>
+            <Text style={styles.lessonTitle}>{currentLesson.title}</Text>
+            <Text style={styles.lessonDescription}>{currentLesson.description}</Text>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${currentLesson.progress}%` }]} />
+            </View>
+            <Text style={styles.progressText}>{currentLesson.progress}% завершено</Text>
           </View>
-          <Text style={styles.progressText}>60% завершено</Text>
-        </View>
+        ) : (
+          <View style={[styles.card, styles.lessonCard]}>
+            <Text style={styles.lessonLabel}>Текущий урок</Text>
+            <Text style={styles.lessonTitle}>Нет активных уроков</Text>
+            <Text style={styles.lessonDescription}>Начните изучение курса, чтобы увидеть прогресс</Text>
+            <TouchableOpacity 
+              style={styles.secondaryButton} 
+              onPress={() => onTabChange?.('courses')}
+            >
+              <Text style={styles.secondaryButtonText}>Перейти к курсам</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <View style={styles.motivationBlock}>
           <Text style={styles.motivationLabel}>Мотивация дня</Text>
-          <Text style={styles.motivationQuote}>{motivationQuote}</Text>
-          <Text style={styles.motivationAuthor}>— Неизвестно</Text>
+          {loadingQuote ? (
+            <View style={styles.quoteLoading}>
+              <ActivityIndicator size="small" color="#6C6C6C" />
+            </View>
+          ) : (
+            <>
+              <Text style={styles.motivationQuote}>"{motivationQuote.text}"</Text>
+              <Text style={styles.motivationAuthor}>— {motivationQuote.author}</Text>
+            </>
+          )}
         </View>
 
         <View style={styles.actionButtons}>
@@ -228,48 +434,7 @@ export const HomeScreen = ({
         </View>
       </ScrollView>
 
-      <View style={styles.tabBar}>
-        {(['home', 'courses', 'diary', 'progress', 'profile'] as const).map((tab) => {
-          const isActive = tab === 'home';
-          const label =
-            tab === 'home'
-              ? 'Главная'
-              : tab === 'courses'
-              ? 'Курсы'
-              : tab === 'diary'
-              ? 'Дневник'
-              : tab === 'progress'
-              ? 'Прогресс'
-              : 'Профиль';
-
-          const iconName =
-            tab === 'home'
-              ? 'grid-outline'
-              : tab === 'courses'
-              ? 'book-outline'
-              : tab === 'diary'
-              ? 'scale-outline'
-              : tab === 'progress'
-              ? 'trophy-outline'
-              : 'person-outline';
-
-          return (
-            <TouchableOpacity
-              key={tab}
-              style={styles.tabItem}
-              activeOpacity={0.8}
-              onPress={() => handleTabPress(tab)}
-            >
-              <Ionicons
-                name={iconName as any}
-                size={18}
-                color={isActive ? '#00C9D9' : '#999'}
-              />
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <TabBar currentScreen={currentScreen} onTabChange={handleTabPress} />
     </SafeAreaView>
   );
 };
@@ -306,6 +471,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 20,
     padding: 16,
+    // @ts-ignore - boxShadow для веб, shadow* для нативных платформ
+    boxShadow: '0px 4px 10px 0px rgba(0, 0, 0, 0.05)',
     shadowColor: '#000',
     shadowOpacity: 0.05,
     shadowOffset: { width: 0, height: 4 },
@@ -341,12 +508,6 @@ const styles = StyleSheet.create({
     color: '#6C6C6C',
     fontSize: 14,
   },
-  progressLoading: {
-    marginTop: 12,
-    height: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   menuCard: {
     backgroundColor: '#E9FBFF',
   },
@@ -380,6 +541,17 @@ const styles = StyleSheet.create({
   alertText: {
     marginTop: 4,
     color: '#D64550',
+  },
+  successCard: {
+    backgroundColor: '#f0fdf4',
+  },
+  successTitle: {
+    color: '#4CAF50',
+    fontWeight: '700',
+  },
+  successText: {
+    marginTop: 4,
+    color: '#4CAF50',
   },
   primaryButton: {
     marginTop: 12,
@@ -426,6 +598,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
     color: '#A1A1A1',
   },
+  quoteLoading: {
+    marginTop: 8,
+    paddingVertical: 20,
+    alignItems: 'center',
+  },
   actionButtons: {
     gap: 12,
   },
@@ -440,30 +617,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#111',
-  },
-  tabBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#fff',
-    paddingVertical: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    borderTopWidth: 1,
-    borderColor: '#F0F0F0',
-  },
-  tabItem: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  tabLabel: {
-    fontSize: 12,
-    color: '#999',
-  },
-  tabLabelActive: {
-    color: '#00C9D9',
-    fontWeight: '600',
   },
 });
 

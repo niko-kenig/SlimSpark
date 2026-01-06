@@ -5,74 +5,403 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../../lib/supabaseClient';
+import { useUserStore } from '../../store/userStore';
+import { NotificationService } from '../../services/notificationService';
+import { TabBar } from '../../components/TabBar';
+import { SkeletonCard } from '../../components/SkeletonLoader';
 
 type ProfileScreenProps = {
-  userId: string | null;
+  userId?: string | null;
   email?: string | null;
   name?: string | null;
   goal?: string | null;
   weight?: number | null;
+  currentScreen?: 'home' | 'courses' | 'diary' | 'progress' | 'profile';
   onBack?: () => void;
   onTabChange?: (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => void;
 };
 
 export const ProfileScreen = ({
-  userId,
-  email,
-  name,
-  goal,
-  weight,
+  userId: userIdProp,
+  email: emailProp,
+  name: nameProp,
+  goal: goalProp,
+  weight: weightProp,
+  currentScreen = 'profile',
   onBack,
   onTabChange,
 }: ProfileScreenProps) => {
+  // Используем store вместо пропсов
+  const { userId, userEmail, profile, loadProfile, clearUser, updateProfile } = useUserStore();
+  
+  // Используем данные из store, если они есть, иначе из пропсов (для обратной совместимости)
+  const currentUserId = userId || userIdProp;
+  const currentEmail = userEmail || emailProp;
+  const currentName = profile?.name || nameProp;
+  const currentGoal = profile?.goal || goalProp;
+  const currentWeight = profile?.initialWeight || weightProp;
+  const currentTargetWeight = profile?.targetWeight || null;
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [sendDiaryEnabled, setSendDiaryEnabled] = useState(false);
   const [uploading, setUploading] = useState(false);
+  
+  // Настройки уведомлений
+  const [reminderTime, setReminderTime] = useState<Date>(new Date());
+  const [reminderFrequency, setReminderFrequency] = useState<'daily' | 'weekly'>('daily');
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showFrequencyPicker, setShowFrequencyPicker] = useState(false);
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  
+  // Редактирование профиля
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editGoal, setEditGoal] = useState<'weight_loss' | 'maintenance' | null>(null);
+  const [editWeight, setEditWeight] = useState('');
+  const [editTargetWeight, setEditTargetWeight] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  // Загружаем профиль из store при открытии экрана
+  useEffect(() => {
+    if (userId && !profile) {
+      loadProfile();
+    }
+  }, [userId, profile, loadProfile]);
+
+  // Загружаем настройки уведомлений при открытии экрана
+  useEffect(() => {
+    if (currentUserId) {
+      loadNotificationSettings();
+    }
+  }, [currentUserId]);
+
+  const loadNotificationSettings = async () => {
+    if (!currentUserId) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('notification_settings')
+        .select('*')
+        .eq('user_id', currentUserId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        console.error('Error loading notification settings:', error);
+        return;
+      }
+
+      if (data) {
+        // Устанавливаем время напоминания
+        if (data.reminder_time) {
+          const [hours, minutes] = data.reminder_time.split(':');
+          const time = new Date();
+          time.setHours(parseInt(hours, 10));
+          time.setMinutes(parseInt(minutes, 10));
+          setReminderTime(time);
+        }
+
+        // Устанавливаем частоту
+        if (data.reminder_frequency) {
+          setReminderFrequency(data.reminder_frequency as 'daily' | 'weekly');
+        }
+
+        // Устанавливаем переключатели
+        setNotificationsEnabled(data.notifications_enabled ?? true);
+        setSendDiaryEnabled(data.send_diary_enabled ?? false);
+
+        // Планируем уведомления после загрузки настроек
+        if (data.notifications_enabled && data.reminder_time) {
+          await NotificationService.loadAndScheduleNotifications(currentUserId);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading notification settings:', error);
+    }
+  };
+
+  const saveNotificationSettings = async () => {
+    if (!currentUserId) return;
+
+    try {
+      setLoadingSettings(true);
+
+      const timeString = `${reminderTime.getHours().toString().padStart(2, '0')}:${reminderTime.getMinutes().toString().padStart(2, '0')}:00`;
+
+      const settingsData = {
+        user_id: currentUserId,
+        reminder_time: timeString,
+        reminder_frequency: reminderFrequency,
+        notifications_enabled: notificationsEnabled,
+        send_diary_enabled: sendDiaryEnabled,
+      };
+
+      // Проверяем, существует ли запись
+      const { data: existing } = await supabase
+        .from('notification_settings')
+        .select('id')
+        .eq('user_id', currentUserId)
+        .single();
+
+      let error;
+      if (existing) {
+        // Обновляем существующую запись
+        const { error: updateError } = await supabase
+          .from('notification_settings')
+          .update(settingsData)
+          .eq('user_id', currentUserId);
+        error = updateError;
+      } else {
+        // Создаем новую запись
+        const { error: insertError } = await supabase
+          .from('notification_settings')
+          .insert(settingsData);
+        error = insertError;
+      }
+
+      if (error) {
+        console.error('Error saving notification settings:', error);
+        Alert.alert('Ошибка', 'Не удалось сохранить настройки уведомлений');
+      } else {
+        console.log('Notification settings saved successfully');
+        // Планируем уведомления после сохранения настроек
+        if (currentUserId) {
+          await NotificationService.loadAndScheduleNotifications(currentUserId);
+        }
+      }
+    } catch (error) {
+      console.error('Error saving notification settings:', error);
+      Alert.alert('Ошибка', 'Не удалось сохранить настройки уведомлений');
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const handleTimeChange = (event: any, selectedTime?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowTimePicker(false);
+    }
+
+    if (selectedTime) {
+      setReminderTime(selectedTime);
+      // Автоматически сохраняем при изменении времени
+      setTimeout(() => {
+        saveNotificationSettings();
+      }, 100);
+    }
+  };
+
+  const handleFrequencyChange = (frequency: 'daily' | 'weekly') => {
+    setReminderFrequency(frequency);
+    setShowFrequencyPicker(false);
+    // Автоматически сохраняем при изменении частоты
+    setTimeout(() => {
+      saveNotificationSettings();
+    }, 100);
+  };
+
+  const handleNotificationsToggle = (value: boolean) => {
+    setNotificationsEnabled(value);
+    // Автоматически сохраняем при изменении
+    setTimeout(() => {
+      saveNotificationSettings();
+    }, 100);
+  };
+
+  const handleSendDiaryToggle = (value: boolean) => {
+    setSendDiaryEnabled(value);
+    // Автоматически сохраняем при изменении
+    setTimeout(() => {
+      saveNotificationSettings();
+    }, 100);
+  };
+
+  const handleEditProfile = () => {
+    // Заполняем форму текущими значениями
+    setEditName(currentName || '');
+    // Убираем 'gain' из возможных значений цели
+    const goal = currentGoal === 'gain' ? null : (currentGoal || null);
+    setEditGoal(goal);
+    setEditWeight(currentWeight ? currentWeight.toString() : '');
+    setEditTargetWeight(currentTargetWeight ? currentTargetWeight.toString() : '');
+    setIsEditingProfile(true);
+  };
+
+  const handleSaveProfile = async () => {
+    if (!profile) {
+      Alert.alert('Ошибка', 'Профиль не загружен');
+      return;
+    }
+
+    try {
+      setSavingProfile(true);
+
+      // Валидация
+      if (!editName.trim()) {
+        Alert.alert('Ошибка', 'Введите имя');
+        setSavingProfile(false);
+        return;
+      }
+
+      const weightValue = editWeight.trim() ? parseFloat(editWeight) : null;
+      if (editWeight.trim() && (isNaN(weightValue!) || weightValue! <= 0)) {
+        Alert.alert('Ошибка', 'Введите корректный вес');
+        setSavingProfile(false);
+        return;
+      }
+
+      const targetWeightValue = editTargetWeight.trim() ? parseFloat(editTargetWeight) : null;
+      if (editTargetWeight.trim() && (isNaN(targetWeightValue!) || targetWeightValue! <= 0)) {
+        Alert.alert('Ошибка', 'Введите корректный желаемый вес');
+        setSavingProfile(false);
+        return;
+      }
+
+      // Сохраняем через store
+      await updateProfile({
+        name: editName.trim(),
+        goal: editGoal,
+        initialWeight: weightValue,
+        targetWeight: targetWeightValue,
+      });
+
+      setIsEditingProfile(false);
+      Alert.alert('Успешно', 'Профиль обновлен');
+    } catch (error) {
+      console.error('Error saving profile:', error);
+      Alert.alert('Ошибка', 'Не удалось сохранить профиль');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditingProfile(false);
+    setEditName('');
+    setEditGoal(null);
+    setEditWeight('');
+    setEditTargetWeight('');
+  };
 
   // Загружаем существующий аватар при открытии профиля
   useEffect(() => {
     const loadAvatar = async () => {
-      if (!userId) return;
+      if (!currentUserId) return;
 
       try {
         // Пробуем загрузить аватар с разными расширениями
         const extensions = ['jpg', 'jpeg', 'png'];
         for (const ext of extensions) {
-          const filePath = `${userId}/avatar.${ext}`;
+          const filePath = `${currentUserId}/avatar.${ext}`;
           const { data } = supabase.storage.from('avatar').getPublicUrl(filePath);
           
           // Проверяем, существует ли файл (простая проверка через fetch)
           try {
             const response = await fetch(data.publicUrl, { method: 'HEAD' });
-            if (response.ok) {
+            // 200-299 - файл существует, 400/404 - файла нет (это нормально)
+            if (response.ok && response.status >= 200 && response.status < 300) {
               setAvatarUri(data.publicUrl);
               return;
             }
-          } catch {
+            // Игнорируем ошибки 400/404 - это нормально, если файла нет
+          } catch (fetchError: any) {
+            // Игнорируем ошибки сети или 400/404 - это нормально, если файла нет
+            if (fetchError?.status !== 400 && fetchError?.status !== 404) {
+              // Логируем только неожиданные ошибки
+              console.debug('Avatar check error (ignored):', fetchError);
+            }
             // Продолжаем поиск
           }
         }
       } catch (error) {
-        console.error('Error loading avatar:', error);
-        // Не показываем ошибку пользователю, просто не загружаем аватар
+        // Не логируем ошибки загрузки аватара - это не критично
+        console.debug('Avatar loading skipped:', error);
       }
     };
 
     loadAvatar();
-  }, [userId]);
+  }, [currentUserId]);
 
   const handleTabPress = (tab: 'home' | 'courses' | 'diary' | 'progress' | 'profile') => {
     onTabChange?.(tab);
+  };
+
+  const handleLogout = () => {
+    console.log('handleLogout called - showing confirmation, Platform.OS:', Platform.OS);
+    
+    // Для веб используем window.confirm, для нативных - Alert
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      const confirmed = window.confirm('Вы уверены, что хотите выйти?');
+      if (confirmed) {
+        console.log('Logout confirmed (web), performing logout...');
+        performLogout();
+      } else {
+        console.log('Logout cancelled (web)');
+      }
+      return;
+    }
+    
+    // Для нативных платформ используем Alert
+    Alert.alert(
+      'Выход',
+      'Вы уверены, что хотите выйти?',
+      [
+        { 
+          text: 'Отмена', 
+          style: 'cancel',
+          onPress: () => console.log('Logout cancelled')
+        },
+        {
+          text: 'Выйти',
+          style: 'destructive',
+          onPress: async () => {
+            console.log('Logout confirmed, performing logout...');
+            await performLogout();
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const performLogout = async () => {
+    try {
+      console.log('Performing logout...');
+      
+      // Выходим из Supabase
+      const { error: signOutError } = await supabase.auth.signOut();
+      
+      if (signOutError) {
+        console.error('Error signing out:', signOutError);
+        Alert.alert('Ошибка', 'Не удалось выйти из системы');
+        return;
+      }
+      
+      console.log('Signed out from Supabase, clearing store...');
+      
+      // Очищаем store
+      clearUser();
+      
+      console.log('Store cleared, waiting for onAuthStateChange to handle navigation...');
+      
+      // НЕ вызываем onBack() - перенаправление будет обработано автоматически
+      // через onAuthStateChange в App.tsx, который установит screen в 'login'
+    } catch (error) {
+      console.error('Error logging out:', error);
+      Alert.alert('Ошибка', 'Не удалось выйти из системы');
+    }
   };
 
   const handlePickAvatar = async () => {
@@ -87,7 +416,7 @@ export const ProfileScreen = ({
       }
 
       const asset = result.assets[0];
-      if (!asset.uri || !userId) {
+      if (!asset.uri || !currentUserId) {
         if (asset.uri) {
           setAvatarUri(asset.uri);
         }
@@ -154,7 +483,7 @@ export const ProfileScreen = ({
         }
         
         // Формируем правильное имя файла с использованием userId
-        const filePath = `${userId}/avatar.${fileExtension}`;
+        const filePath = `${currentUserId}/avatar.${fileExtension}`;
 
         console.log('Uploading to:', filePath, 'Content type:', blob.type, 'Extension:', fileExtension);
 
@@ -284,30 +613,187 @@ export const ProfileScreen = ({
               </>
             )}
           </TouchableOpacity>
-          <Text style={styles.profileName}>{name && name.length > 0 ? name : 'Имя Пользователя'}</Text>
-          <Text style={styles.profileEmail}>{email && email.length > 0 ? email : 'user@example.com'}</Text>
+          <Text style={styles.profileName}>{currentName && currentName.length > 0 ? currentName : 'Имя Пользователя'}</Text>
+          <Text style={styles.profileEmail}>{currentEmail && currentEmail.length > 0 ? currentEmail : 'user@example.com'}</Text>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Напоминания</Text>
           <View style={styles.rowBetween}>
+            <Text style={styles.cardTitle}>Напоминания</Text>
+            <TouchableOpacity
+              onPress={async () => {
+                try {
+                  await NotificationService.sendTestNotification();
+                  Alert.alert('Успешно', 'Тестовое уведомление будет отправлено через 2 секунды');
+                } catch (error) {
+                  Alert.alert('Ошибка', 'Не удалось отправить тестовое уведомление. Проверьте разрешения.');
+                }
+              }}
+              style={styles.testButton}
+            >
+              <Text style={styles.testButtonText}>Тест</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={styles.rowBetween}
+            onPress={() => setShowTimePicker(true)}
+            activeOpacity={0.7}
+          >
             <View style={styles.row}>
               <Ionicons name="notifications-outline" size={18} color="#555" />
               <Text style={styles.rowLabel}>Время напоминаний</Text>
             </View>
-            <Text style={styles.rowValue}>09:00</Text>
-          </View>
-          <View style={[styles.rowBetween, styles.rowTopMargin]}>
+            <View style={styles.row}>
+              <Text style={styles.rowValue}>
+                {reminderTime.toLocaleTimeString('ru-RU', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color="#999" style={{ marginLeft: 4 }} />
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.rowBetween, styles.rowTopMargin]}
+            onPress={() => setShowFrequencyPicker(true)}
+            activeOpacity={0.7}
+          >
             <View style={styles.row}>
               <Ionicons name="refresh-outline" size={18} color="#555" />
               <Text style={styles.rowLabel}>Частота</Text>
             </View>
             <View style={styles.frequencyBox}>
-              <Text style={styles.frequencyText}>Ежедневно</Text>
+              <Text style={styles.frequencyText}>
+                {reminderFrequency === 'daily' ? 'Ежедневно' : 'Еженедельно'}
+              </Text>
               <Ionicons name="chevron-down" size={16} color="#999" />
             </View>
-          </View>
+          </TouchableOpacity>
         </View>
+
+        {/* TimePicker для Android и iOS */}
+        {showTimePicker && (
+          <>
+            {Platform.OS === 'ios' && (
+              <Modal
+                visible={showTimePicker}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowTimePicker(false)}
+              >
+                <TouchableOpacity
+                  style={styles.modalOverlay}
+                  activeOpacity={1}
+                  onPress={() => setShowTimePicker(false)}
+                >
+                  <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
+                    <View style={styles.timePickerHeader}>
+                      <TouchableOpacity
+                        onPress={() => setShowTimePicker(false)}
+                        style={styles.timePickerCancel}
+                      >
+                        <Text style={styles.modalCancelText}>Отмена</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.modalTitle}>Выберите время</Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setShowTimePicker(false);
+                          saveNotificationSettings();
+                        }}
+                        style={styles.timePickerDone}
+                      >
+                        <Text style={styles.timePickerDoneText}>Готово</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <DateTimePicker
+                      value={reminderTime}
+                      mode="time"
+                      is24Hour={true}
+                      display="spinner"
+                      onChange={(event, selectedTime) => {
+                        if (selectedTime) {
+                          setReminderTime(selectedTime);
+                        }
+                      }}
+                      style={styles.timePickerIOS}
+                    />
+                  </View>
+                </TouchableOpacity>
+              </Modal>
+            )}
+            {Platform.OS === 'android' && (
+              <DateTimePicker
+                value={reminderTime}
+                mode="time"
+                is24Hour={true}
+                display="default"
+                onChange={handleTimeChange}
+              />
+            )}
+          </>
+        )}
+
+        {/* Модальное окно для выбора частоты */}
+        <Modal
+          visible={showFrequencyPicker}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowFrequencyPicker(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalOverlay}
+            activeOpacity={1}
+            onPress={() => setShowFrequencyPicker(false)}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Выберите частоту</Text>
+              <TouchableOpacity
+                style={[
+                  styles.frequencyOption,
+                  reminderFrequency === 'daily' && styles.frequencyOptionActive,
+                ]}
+                onPress={() => handleFrequencyChange('daily')}
+              >
+                <Text
+                  style={[
+                    styles.frequencyOptionText,
+                    reminderFrequency === 'daily' && styles.frequencyOptionTextActive,
+                  ]}
+                >
+                  Ежедневно
+                </Text>
+                {reminderFrequency === 'daily' && (
+                  <Ionicons name="checkmark" size={20} color="#00C9D9" />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.frequencyOption,
+                  reminderFrequency === 'weekly' && styles.frequencyOptionActive,
+                ]}
+                onPress={() => handleFrequencyChange('weekly')}
+              >
+                <Text
+                  style={[
+                    styles.frequencyOptionText,
+                    reminderFrequency === 'weekly' && styles.frequencyOptionTextActive,
+                  ]}
+                >
+                  Еженедельно
+                </Text>
+                {reminderFrequency === 'weekly' && (
+                  <Ionicons name="checkmark" size={20} color="#00C9D9" />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setShowFrequencyPicker(false)}
+              >
+                <Text style={styles.modalCancelText}>Отмена</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Интеграция с MessageSquareShare</Text>
@@ -322,46 +808,164 @@ export const ProfileScreen = ({
             <Text style={styles.rowLabel}>Получать уведомления</Text>
             <Switch
               value={notificationsEnabled}
-              onValueChange={setNotificationsEnabled}
+              onValueChange={handleNotificationsToggle}
               trackColor={{ false: '#E4E4E4', true: '#6FF0FB' }}
               thumbColor="#fff"
+              disabled={loadingSettings}
             />
           </View>
           <View style={[styles.rowBetween, styles.rowTopMargin]}>
             <Text style={styles.rowLabel}>Отправлять дневник</Text>
             <Switch
               value={sendDiaryEnabled}
-              onValueChange={setSendDiaryEnabled}
+              onValueChange={handleSendDiaryToggle}
               trackColor={{ false: '#E4E4E4', true: '#6FF0FB' }}
               thumbColor="#fff"
+              disabled={loadingSettings}
             />
           </View>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Ваш профиль</Text>
-          <View style={styles.profileRow}>
-            <Text style={styles.profileLabel}>Имя</Text>
-            <Text style={styles.profileValue}>{name && name.length > 0 ? name : '—'}</Text>
+          <View style={styles.rowBetween}>
+            <Text style={styles.cardTitle}>Ваш профиль</Text>
+            {!isEditingProfile && (
+              <TouchableOpacity
+                onPress={handleEditProfile}
+                style={styles.editButton}
+              >
+                <Ionicons name="create-outline" size={18} color="#00C9D9" />
+                <Text style={styles.editButtonText}>Редактировать</Text>
+              </TouchableOpacity>
+            )}
           </View>
-          <View style={styles.profileRow}>
-            <Text style={styles.profileLabel}>Цель</Text>
-            <Text style={styles.profileValue}>
-              {goal === 'weight_loss'
-                ? 'Снижение веса'
-                : goal === 'maintenance'
-                ? 'Поддержание веса'
-                : goal === 'gain'
-                ? 'Набор массы'
-                : '—'}
-            </Text>
-          </View>
-          <View style={styles.profileRow}>
-            <Text style={styles.profileLabel}>Вес</Text>
-            <Text style={styles.profileValue}>
-              {typeof weight === 'number' ? `${weight} кг` : '—'}
-            </Text>
-          </View>
+          
+          {!isEditingProfile ? (
+            // Режим просмотра
+            <>
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Имя</Text>
+                <Text style={styles.profileValue}>{currentName && currentName.length > 0 ? currentName : '—'}</Text>
+              </View>
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Цель</Text>
+                <Text style={styles.profileValue}>
+                  {currentGoal === 'weight_loss'
+                    ? 'Снижение веса'
+                    : currentGoal === 'maintenance'
+                    ? 'Поддержание веса'
+                    : '—'}
+                </Text>
+              </View>
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Вес</Text>
+                <Text style={styles.profileValue}>
+                  {typeof currentWeight === 'number' ? `${currentWeight} кг` : '—'}
+                </Text>
+              </View>
+              <View style={styles.profileRow}>
+                <Text style={styles.profileLabel}>Желаемый вес</Text>
+                <Text style={styles.profileValue}>
+                  {typeof currentTargetWeight === 'number' ? `${currentTargetWeight} кг` : '—'}
+                </Text>
+              </View>
+            </>
+          ) : (
+            // Режим редактирования
+            <View style={styles.editForm}>
+              <View style={styles.editField}>
+                <Text style={styles.editLabel}>Имя *</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editName}
+                  onChangeText={setEditName}
+                  placeholder="Введите имя"
+                  autoCapitalize="words"
+                />
+              </View>
+              
+              <View style={styles.editField}>
+                <Text style={styles.editLabel}>Цель</Text>
+                <View style={styles.goalButtons}>
+                  <TouchableOpacity
+                    style={[
+                      styles.goalButton,
+                      editGoal === 'weight_loss' && styles.goalButtonActive,
+                    ]}
+                    onPress={() => setEditGoal('weight_loss')}
+                  >
+                    <Text
+                      style={[
+                        styles.goalButtonText,
+                        editGoal === 'weight_loss' && styles.goalButtonTextActive,
+                      ]}
+                    >
+                      Снижение веса
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.goalButton,
+                      editGoal === 'maintenance' && styles.goalButtonActive,
+                    ]}
+                    onPress={() => setEditGoal('maintenance')}
+                  >
+                    <Text
+                      style={[
+                        styles.goalButtonText,
+                        editGoal === 'maintenance' && styles.goalButtonTextActive,
+                      ]}
+                    >
+                      Поддержание
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              
+              <View style={styles.editField}>
+                <Text style={styles.editLabel}>Вес (кг)</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editWeight}
+                  onChangeText={setEditWeight}
+                  placeholder="Введите вес"
+                  keyboardType="decimal-pad"
+                />
+              </View>
+              
+              <View style={styles.editField}>
+                <Text style={styles.editLabel}>Желаемый вес (кг)</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editTargetWeight}
+                  onChangeText={setEditTargetWeight}
+                  placeholder="Введите желаемый вес"
+                  keyboardType="decimal-pad"
+                />
+              </View>
+              
+              <View style={styles.editActions}>
+                <TouchableOpacity
+                  style={[styles.editActionButton, styles.cancelButton]}
+                  onPress={handleCancelEdit}
+                  disabled={savingProfile}
+                >
+                  <Text style={styles.cancelButtonText}>Отмена</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.editActionButton, styles.saveButton]}
+                  onPress={handleSaveProfile}
+                  disabled={savingProfile}
+                >
+                  {savingProfile ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.saveButtonText}>Сохранить</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
 
         <View style={styles.card}>
@@ -375,53 +979,12 @@ export const ProfileScreen = ({
           </View>
         </View>
 
-        <TouchableOpacity style={styles.logoutButton} activeOpacity={0.9}>
+        <TouchableOpacity style={styles.logoutButton} activeOpacity={0.9} onPress={handleLogout}>
           <Text style={styles.logoutText}>Выйти</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      <View style={styles.tabBar}>
-        {(['home', 'courses', 'diary', 'progress', 'profile'] as const).map((tab) => {
-          const isActive = tab === 'profile';
-          const label =
-            tab === 'home'
-              ? 'Главная'
-              : tab === 'courses'
-              ? 'Курсы'
-              : tab === 'diary'
-              ? 'Дневник'
-              : tab === 'progress'
-              ? 'Прогресс'
-              : 'Профиль';
-
-          const iconName =
-            tab === 'home'
-              ? 'home'
-              : tab === 'courses'
-              ? 'book'
-              : tab === 'diary'
-              ? 'scale'
-              : tab === 'progress'
-              ? 'stats-chart'
-              : 'person';
-
-          return (
-            <TouchableOpacity
-              key={tab}
-              style={styles.tabItem}
-              activeOpacity={0.8}
-              onPress={() => handleTabPress(tab)}
-            >
-              <Ionicons
-                name={iconName as any}
-                size={18}
-                color={isActive ? '#00C9D9' : '#999'}
-              />
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>{label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      <TabBar currentScreen={currentScreen} onTabChange={handleTabPress} />
     </SafeAreaView>
   );
 };
@@ -582,29 +1145,182 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  tabBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+  timePickerIOS: {
     backgroundColor: '#fff',
-    paddingVertical: 10,
+    height: 200,
+  },
+  timePickerHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    borderTopWidth: 1,
-    borderColor: '#F0F0F0',
-  },
-  tabItem: {
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 4,
+    marginBottom: 16,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
   },
-  tabLabel: {
-    fontSize: 12,
-    color: '#999',
+  timePickerCancel: {
+    padding: 8,
   },
-  tabLabelActive: {
+  timePickerDone: {
+    padding: 8,
+  },
+  timePickerDoneText: {
+    fontSize: 16,
     color: '#00C9D9',
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  frequencyOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: '#F5F5F5',
+  },
+  frequencyOptionActive: {
+    backgroundColor: '#E9FBFF',
+    borderWidth: 1,
+    borderColor: '#00C9D9',
+  },
+  frequencyOptionText: {
+    fontSize: 16,
+    color: '#555',
+  },
+  frequencyOptionTextActive: {
+    color: '#00C9D9',
+    fontWeight: '600',
+  },
+  modalCancelButton: {
+    marginTop: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    fontSize: 16,
+    color: '#999',
+  },
+  testButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#E9FBFF',
+    borderRadius: 12,
+  },
+  testButtonText: {
+    fontSize: 12,
+    color: '#00C9D9',
+    fontWeight: '600',
+  },
+  editButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#E9FBFF',
+    borderRadius: 12,
+  },
+  editButtonText: {
+    fontSize: 12,
+    color: '#00C9D9',
+    fontWeight: '600',
+  },
+  editForm: {
+    gap: 16,
+    marginTop: 8,
+  },
+  editField: {
+    gap: 8,
+  },
+  editLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#555',
+  },
+  editInput: {
+    borderWidth: 1,
+    borderColor: '#E2E2E2',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#FAFAFA',
+    fontSize: 16,
+    color: '#111',
+  },
+  goalButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  goalButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E2E2',
+    backgroundColor: '#FAFAFA',
+  },
+  goalButtonActive: {
+    backgroundColor: '#E9FBFF',
+    borderColor: '#00C9D9',
+  },
+  goalButtonText: {
+    fontSize: 14,
+    color: '#555',
+  },
+  goalButtonTextActive: {
+    color: '#00C9D9',
+    fontWeight: '600',
+  },
+  editActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  editActionButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#F5F5F5',
+    borderWidth: 1,
+    borderColor: '#E2E2E2',
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#555',
+  },
+  saveButton: {
+    backgroundColor: '#00C9D9',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
 

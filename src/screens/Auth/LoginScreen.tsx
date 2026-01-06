@@ -19,9 +19,43 @@ type LoginScreenProps = {
 export const LoginScreen = ({ onLogin, loading, errorMessage }: LoginScreenProps) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const validateEmail = (email: string): boolean => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
 
   const handleLogin = () => {
-    onLogin?.(username.trim(), password);
+    // Очищаем предыдущие ошибки
+    setLocalError(null);
+    
+    const trimmedUsername = username.trim();
+    const trimmedPassword = password.trim();
+
+    // Валидация
+    if (!trimmedUsername) {
+      setLocalError('Введите email');
+      return;
+    }
+
+    if (!validateEmail(trimmedUsername)) {
+      setLocalError('Введите корректный email адрес');
+      return;
+    }
+
+    if (!trimmedPassword) {
+      setLocalError('Введите пароль');
+      return;
+    }
+
+    if (trimmedPassword.length < 4) {
+      setLocalError('Пароль должен содержать минимум 4 символа');
+      return;
+    }
+
+    // Вызываем onLogin только если валидация прошла
+    onLogin?.(trimmedUsername, trimmedPassword);
   };
 
   return (
@@ -36,35 +70,50 @@ export const LoginScreen = ({ onLogin, loading, errorMessage }: LoginScreenProps
         </View>
 
         <View style={styles.inputs}>
-          <Text style={styles.label}>Username</Text>
+          <Text style={styles.label}>Email</Text>
           <TextInput
-            placeholder="Введите имя пользователя"
-            style={styles.input}
+            placeholder="Введите email"
+            style={[styles.input, (errorMessage || localError) && styles.inputError]}
             value={username}
-            onChangeText={setUsername}
+            onChangeText={(text) => {
+              setUsername(text);
+              // Очищаем ошибку при вводе
+              if (localError) setLocalError(null);
+            }}
             autoCapitalize="none"
             autoCorrect={false}
+            keyboardType="email-address"
+            textContentType="emailAddress"
           />
 
           <Text style={[styles.label, styles.passwordLabel]}>Password</Text>
           <TextInput
             placeholder="Введите пароль"
             secureTextEntry
-            style={styles.input}
+            style={[styles.input, (errorMessage || localError) && styles.inputError]}
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(text) => {
+              setPassword(text);
+              // Очищаем ошибку при вводе
+              if (localError) setLocalError(null);
+            }}
+            textContentType="password"
           />
         </View>
 
-        {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
+        {(errorMessage || localError) ? (
+          <Text style={styles.error}>{errorMessage || localError}</Text>
+        ) : null}
 
         <TouchableOpacity
-          style={[styles.loginButton, loading && styles.loginButtonDisabled]}
+          style={[styles.loginButton, (loading || !username.trim() || !password.trim()) && styles.loginButtonDisabled]}
           onPress={handleLogin}
           activeOpacity={0.9}
-          disabled={loading}
+          disabled={loading || !username.trim() || !password.trim()}
         >
-          <Text style={styles.loginText}>{loading ? 'Logging in...' : 'Log in'}</Text>
+          <Text style={styles.loginText}>
+            {loading ? 'Вход...' : 'Войти'}
+          </Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -114,6 +163,10 @@ const styles = StyleSheet.create({
     borderColor: '#e2e2e2',
     backgroundColor: '#fafafa',
     fontSize: 16,
+  },
+  inputError: {
+    borderColor: '#D64550',
+    backgroundColor: '#fff5f5',
   },
   loginButton: {
     backgroundColor: '#111111',

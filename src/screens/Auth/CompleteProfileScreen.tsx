@@ -19,7 +19,6 @@ type GoalOption = {
 const goalOptions: GoalOption[] = [
   { label: 'Похудеть', value: 'weight_loss' },
   { label: 'Поддерживать вес', value: 'maintenance' },
-  { label: 'Набрать массу', value: 'gain' },
 ];
 
 type CompleteProfileScreenProps = {
@@ -58,17 +57,6 @@ export const CompleteProfileScreen = ({ onSubmit, loading }: CompleteProfileScre
       }
       if (endWeight >= startWeight) {
         // Можно добавить Alert: "Конечный вес должен быть меньше стартового"
-        return;
-      }
-    }
-    
-    if (goal.value === 'gain') {
-      if (endWeight <= 0) {
-        // Можно добавить Alert: "Укажите конечный вес для набора массы"
-        return;
-      }
-      if (endWeight <= startWeight) {
-        // Можно добавить Alert: "Конечный вес должен быть больше стартового"
         return;
       }
     }
@@ -158,8 +146,6 @@ export const CompleteProfileScreen = ({ onSubmit, loading }: CompleteProfileScre
           <Text style={styles.helper}>
             {goal?.value === 'weight_loss'
               ? 'Укажите желаемый вес для похудения.'
-              : goal?.value === 'gain'
-              ? 'Укажите желаемый вес для набора массы.'
               : 'Укажите желаемый вес для поддержания.'}
           </Text>
         </View>
